@@ -18,6 +18,8 @@ on:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    permissions:
+      contents: write   # 必须声明写入权限才能创建 Release
 
     steps:
       # 1) 拉代码
@@ -54,7 +56,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
-          release_name: merge_stock v1.0.${{ github.run_number }}
+          name: merge_stock v1.0.${{ github.run_number }}
           draft: false
           prerelease: false
           files: |
