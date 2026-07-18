@@ -1,0 +1,64 @@
+# GitHub Actions CI/CD: 自动在 Windows 云端打包 merge_stock.exe
+#
+# 触发方式:
+#   1. push 到 main 分支时自动运行
+#   2. 网页上手动点击 "Run workflow" 触发
+#
+# 构建产物:
+#   dist/merge_stock/  (文件夹形式，含 .exe + DLL)
+#   用户下载后解压整个文件夹，双击 merge_stock.exe 即可运行
+#
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      # 1) 拉代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2) 安装 Python 3.11 (Windows 上 PySide6 对 3.11+ 支持更好)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3) 安装依赖
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller -r requirements.txt
+
+      # 4) 用 Windows 专用 spec 文件打包
+      - name: Build EXE with PyInstaller
+        run: |
+          pyinstaller --noconfirm merge_stock_windows.spec
+
+      # 5) 把构建结果打包成 zip，方便下载
+      - name: Package as zip
+        run: |
+          cd dist
+          powershell Compress-Archive -Path merge_stock -DestinationPath merge_stock_windows.zip -Force
+
+      # 6) 上传 zip 到 Artifacts
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge_stock_windows_zip
+          path: dist/merge_stock_windows.zip
+          retention-days: 14   # 保留 14 天后自动删除
+
+      # 7) 同时上传完整 dist 文件夹（给高级用户）
+      - name: Upload full dist folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge_stock_dist_full
+          path: dist/merge_stock/
+          retention-days: 14
