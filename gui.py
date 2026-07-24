@@ -40,36 +40,45 @@ from PySide6.QtWidgets import (
 import merge_stock_files as core
 
 APP_NAME = "Stock Merge"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 
-# ------------------- 主题（现代暗色 / 渐变高亮 / 玻璃质感） -------------------
+# ------------------- macOS 毛玻璃支持 -------------------
+if sys.platform == "darwin":
+    from PySide6.QtWidgets import QGraphicsView
+    try:
+        from AppKit import NSVisualEffectView, NSApp, NSWindow, NSClearColor, NSVisualEffectMaterial, NSVisualEffectBlendingMode
+    except ImportError:
+        NSVisualEffectView = None
+
+# ------------------- 主题（浅色毛玻璃 / 柔和渐变 / 现代轻盈） -------------------
 # 颜色按层级组织: 背景三阶 / 前景两阶 / 品牌色 / 语义色。
 # 所有阴影、圆角、间距都用 token 集中管理,改主题只改这里。
-BG_BASE = "#0e0f13"          # 最底层
-BG_PANEL = "#181a21"         # 卡片底
-BG_RAISED = "#1f222a"        # 升起层(输入框 / 按钮)
-BG_HOVER = "#262a33"
-BG_FOCUS = "#2d323d"
-BORDER = "#2a2e38"
-BORDER_LIGHT = "#3a3f4a"
-TEXT_PRIMARY = "#e8eaed"
-TEXT_SECONDARY = "#b3b8c2"
-TEXT_MUTED = "#7a8092"
-TEXT_DIM = "#5a6072"
+BG_BASE = "#f0f2f5"          # 最底层（浅灰蓝）
+BG_PANEL = "#ffffff"          # 卡片底（纯白）
+BG_RAISED = "#f8f9fb"         # 升起层(输入框 / 按钮)
+BG_HOVER = "#f0f4ff"
+BG_FOCUS = "#e8efff"
+BG_GLASS = "#ffffffcc"        # 毛玻璃叠加（80% 透明白）
+BORDER = "#e0e4ec"
+BORDER_LIGHT = "#eaecef"
+TEXT_PRIMARY = "#1a1d23"
+TEXT_SECONDARY = "#5c6270"
+TEXT_MUTED = "#9ca3af"
+TEXT_DIM = "#b8bcc4"
 
-# 品牌色 (cyan -> teal -> purple 渐变)
-ACCENT_CYAN = "#22d3ee"
-ACCENT_TEAL = "#14b8a6"
-ACCENT_PURPLE = "#a855f7"
-ACCENT_PINK = "#ec4899"
+# 品牌色 (蓝 -> 靛蓝 渐变)
+ACCENT_BLUE = "#4f8ef7"
+ACCENT_INDIGO = "#6366f1"
+ACCENT_PURPLE = "#8b5cf6"
+ACCENT_CYAN = "#06b6d4"
 
 # 品牌渐变
-GRAD_BRAND = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_CYAN}, stop:0.5 {ACCENT_TEAL}, stop:1 {ACCENT_PURPLE})"
-GRAD_BG_HERO = f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #181a21, stop:1 #0e0f13)"
-GRAD_PROGRESS = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_CYAN}, stop:0.5 {ACCENT_TEAL}, stop:1 {ACCENT_PURPLE})"
+GRAD_BRAND = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_BLUE}, stop:0.5 {ACCENT_INDIGO}, stop:1 {ACCENT_PURPLE})"
+GRAD_BG_HERO = f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f8f9fb, stop:1 #f0f2f5)"
+GRAD_PROGRESS = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_BLUE}, stop:0.5 {ACCENT_INDIGO}, stop:1 {ACCENT_PURPLE})"
 
 # 语义色
-SUCCESS = "#22c55e"
+SUCCESS = "#10b981"
 WARNING = "#f59e0b"
 DANGER = "#ef4444"
 INFO = "#3b82f6"
@@ -153,6 +162,12 @@ class Worker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+
+        if sys.platform == "darwin" and 'NSVisualEffectView' in dir():
+            self._apply_glass_background()
+        else:
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(720, 560)
         self._worker: Worker | None = None
@@ -160,11 +175,45 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._load_initial_config()
 
+    def _apply_glass_background(self):
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setStyleSheet(f"""
+            QMainWindow {{
+                background: transparent;
+                border-radius: 18px;
+            }}
+            QWidget {{
+                background: transparent;
+            }}
+        """)
+
     # ------------------- UI 构建 -------------------
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        if sys.platform == "darwin" and 'NSVisualEffectView' in dir():
+            container = QFrame()
+            container.setObjectName("glassContainer")
+            container.setStyleSheet(f"""
+                QFrame#glassContainer {{
+                    background: rgba(248, 249, 251, 0.85);
+                    border: 1px solid rgba(255, 255, 255, 0.6);
+                    border-radius: 18px;
+                }}
+            """)
+            self.setCentralWidget(container)
+            root = QVBoxLayout(container)
+        else:
+            container = QWidget()
+            container.setObjectName("glassContainer")
+            container.setStyleSheet(f"""
+                QWidget#glassContainer {{
+                    background: {BG_BASE};
+                    border-radius: 18px;
+                }}
+            """)
+            self.setCentralWidget(container)
+            root = QVBoxLayout(container)
         root.setContentsMargins(28, 24, 28, 20)
         root.setSpacing(18)
 
@@ -392,10 +441,14 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(f"""
             /* ---------- 全局基色 ---------- */
             QMainWindow, QWidget {{
-                background: {BG_BASE};
+                background: transparent;
                 color: {TEXT_PRIMARY};
                 font-family: -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
                 font-size: 13px;
+            }}
+            QMainWindow {{
+                background: {BG_BASE};
+                border-radius: 16px;
             }}
             QToolTip {{
                 background: {BG_PANEL};
@@ -434,9 +487,8 @@ class MainWindow(QMainWindow):
                 letter-spacing: 0.5px;
             }}
             QLabel#safetyPill {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_TEAL}, stop:1 {ACCENT_CYAN});
-                color: #061b1c;
+                background: {GRAD_BRAND};
+                color: white;
                 border: none;
                 border-radius: 12px;
                 padding: 5px 14px;
@@ -514,12 +566,10 @@ class MainWindow(QMainWindow):
                 text-align: center;
             }}
             QPushButton#runBtn:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_PINK}, stop:0.5 {ACCENT_PURPLE}, stop:1 {ACCENT_CYAN});
+                background: {ACCENT_INDIGO};
             }}
             QPushButton#runBtn:pressed {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 {ACCENT_TEAL}, stop:1 {ACCENT_CYAN});
+                background: {ACCENT_PURPLE};
             }}
             QPushButton#runBtn:disabled {{
                 background: {BG_RAISED};
@@ -554,10 +604,10 @@ class MainWindow(QMainWindow):
                 letter-spacing: 0.5px;
             }}
             QLabel#badge[kind="ready"]   {{ background: {BG_RAISED};        color: {TEXT_SECONDARY}; border-color: {BORDER_LIGHT}; }}
-            QLabel#badge[kind="running"] {{ background: {ACCENT_CYAN};      color: #061b1c;          border: none; }}
-            QLabel#badge[kind="ok"]      {{ background: {SUCCESS};          color: #061b1c;          border: none; }}
-            QLabel#badge[kind="err"]     {{ background: {DANGER};           color: white;            border: none; }}
-            QLabel#badge[kind="warn"]    {{ background: {WARNING};          color: #1a1206;          border: none; }}
+            QLabel#badge[kind="running"] {{ background: {ACCENT_BLUE};      color: white;          border: none; }}
+            QLabel#badge[kind="ok"]      {{ background: {SUCCESS};          color: white;          border: none; }}
+            QLabel#badge[kind="err"]     {{ background: {DANGER};           color: white;          border: none; }}
+            QLabel#badge[kind="warn"]    {{ background: {WARNING};          color: white;          border: none; }}
 
             /* ---------- 选项 (列数 / 复选) ---------- */
             QLabel#logTitle {{
@@ -881,7 +931,21 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    win = MainWindow()
+
+    # 捕获 Qt 平台错误
+    error_msg = None
+    try:
+        win = MainWindow()
+    except Exception as e:
+        error_msg = str(e)
+
+    if error_msg:
+        print(f"[启动错误] {error_msg}", file=sys.stderr)
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, f"{APP_NAME} 启动失败",
+                           f"无法初始化界面:\n{error_msg}\n\n请确保 Qt 插件可用。")
+        sys.exit(1)
+
     win.show()
     # 仅用于打包后自动化测试：环境变量驱动自动点开始
     if os.environ.get("STOCK_MERGE_AUTO_RUN") == "1":

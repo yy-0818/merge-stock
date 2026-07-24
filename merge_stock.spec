@@ -8,7 +8,7 @@
 from pathlib import Path
 
 import openpyxl
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 PROJECT_DIR = Path(SPECPATH).resolve()
 
@@ -16,12 +16,17 @@ hiddenimports = ['openpyxl']
 hiddenimports += collect_submodules('PySide6')
 hiddenimports += collect_submodules('openpyxl')
 
+# 收集 PySide6 的数据文件（包含 Qt 平台插件等）
+datas = []
+datas += collect_data_files('PySide6')
+datas += collect_data_files('shiboken6')
+
 
 a = Analysis(
     ['gui.py'],
     pathex=[str(PROJECT_DIR)],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

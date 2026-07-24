@@ -967,7 +967,7 @@ def process(cfg: dict, progress_cb: ProgressCb | None = None) -> ProcessResult:
         raise FileNotFoundError(f"源目录不存在: {src_dir}")
 
     actual_output_dir = _prepare_output_dir(output_dir, allow_unsafe=bool(cfg.get("allow_unsafe_output", False)))
-    log.append(f"[输出] 使用目录: {actual_output_dir.name}")
+    result.log.append(f"[输出] 使用目录: {actual_output_dir.name}")
     output_dir = actual_output_dir
     result.actual_output_dir = actual_output_dir
 
