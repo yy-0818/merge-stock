@@ -118,14 +118,14 @@ def _is_dangerous_output_dir(p: Path) -> str | None:
     return None
 
 
-def _safe_prepare_output_dir(output_dir: Path, allow_unsafe: bool = False) -> None:
-    """清理并准备 output_dir。
+def _safe_prepare_output_dir(output_dir: Path, allow_unsafe: bool = False) -> Path:
+    """准备 output_dir（目录名自动加序号，避免覆盖）。
 
-    安全策略(防 rmtree 误删):
+    安全策略(防误删):
     1. resolve 后,若等于 ~/Desktop ~/Documents ~/Downloads ~ / 之一 → 抛 UnsafeOutputDirError
        (除非显式传入 allow_unsafe=True;此选项仅供 CLI 高级用户)
-    2. 若目录已存在,先统计文件数;不阻断,但通过日志让调用方知情
-    3. 上述都通过才执行 rmtree + mkdir
+    2. 若目录已存在,自动创建带序号的目录: _output, _output_1, _output_2, ...
+    3. 返回实际使用的目录路径
     """
     if not allow_unsafe:
         label = _is_dangerous_output_dir(output_dir)
@@ -136,9 +136,20 @@ def _safe_prepare_output_dir(output_dir: Path, allow_unsafe: bool = False) -> No
                 f"  请新建一个子目录(例如 ~/work/stock/_output)再设置 output_dir。"
             )
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True)
+        return output_dir
+
+    # 目录已存在 → 自动创建带序号的目录
+    base_name = output_dir.name
+    parent = output_dir.parent
+    counter = 0
+    candidate = output_dir
+    while candidate.exists():
+        counter += 1
+        candidate = parent / f"{base_name}_{counter}"
+    candidate.mkdir(parents=True)
+    return candidate
 
 
 @dataclass
@@ -957,7 +968,10 @@ def process(cfg: dict, progress_cb: ProgressCb | None = None) -> ProcessResult:
     if not src_dir.exists():
         raise FileNotFoundError(f"源目录不存在: {src_dir}")
 
-    _safe_prepare_output_dir(output_dir, allow_unsafe=bool(cfg.get("allow_unsafe_output", False)))
+    actual_output_dir = _safe_prepare_output_dir(output_dir, allow_unsafe=bool(cfg.get("allow_unsafe_output", False)))
+    if actual_output_dir != output_dir:
+        log.append(f"[注意] 输出目录已存在，自动使用: {actual_output_dir.name}")
+        output_dir = actual_output_dir
 
     available = {f[:-5] for f in os.listdir(src_dir) if f.lower().endswith(".xlsx")}
     groups = load_classification(index_file)
