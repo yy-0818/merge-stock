@@ -183,7 +183,7 @@ class MainWindow(QMainWindow):
         )
         self.out_card, self.out_edit, self._out_btn = self._build_path_card(
             "folder", "输出文件夹",
-            "合并结果将写入此目录(脚本会先清空,勿选桌面/文档)", self._pick_out
+            "合并结果将写入此目录下的时间戳子目录(保留历史记录)", self._pick_out
         )
         cards_row.addWidget(self.src_card)
         cards_row.addWidget(self.idx_card)
@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         # 状态栏
         sb = QStatusBar()
         sb.setObjectName("statusBar")
-        sb.showMessage(f"  {APP_NAME}  ·  v{APP_VERSION}  ·  路径已自动同步到 config.json")
+        sb.showMessage(f"  {APP_NAME}  ·  v{APP_VERSION}  ·  路径已自动同步到 config.json (每次运行自动创建新目录)")
         self.setStatusBar(sb)
 
         # 全局样式 + 微交互定时器
@@ -381,7 +381,7 @@ class MainWindow(QMainWindow):
         # 用单次定时器还原
         from PySide6.QtCore import QTimer
         QTimer.singleShot(ms, lambda: sb.showMessage(
-            f"  {APP_NAME}  ·  v{APP_VERSION}  ·  路径已自动同步到 config.json"
+            f"  {APP_NAME}  ·  v{APP_VERSION}  ·  路径已自动同步到 config.json (每次运行自动创建新目录)"
         ))
 
     def _apply_qss(self):
@@ -808,23 +808,6 @@ class MainWindow(QMainWindow):
         cfg = self._current_cfg()
         out = Path(cfg["output_dir"])
 
-        # 二次确认:output_dir 里已有文件,数量/大小暴露
-        existing_summary = self._summarize_existing(out)
-        if existing_summary is not None:
-            n, size_human = existing_summary
-            self._log(f"[安全检查] output_dir 已存在内容: {n} 个文件 / 约 {size_human}")
-            btn = QMessageBox.question(
-                self, APP_NAME,
-                f"输出目录已存在内容:\n  {out}\n"
-                f"  共 {n} 个文件,约 {size_human}\n\n"
-                f"脚本会先【清空整个目录】再写入合并结果。\n"
-                f"是否继续?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-            )
-            if btn != QMessageBox.Yes:
-                self._log("[取消] 用户放弃合并")
-                return
-
         self._persist_config()
         self.run_btn.setEnabled(False)
         self.run_btn.setText("  处理中…")
@@ -832,7 +815,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress.setFormat("  %p%  ·  %v / %m")
         self._set_badge("运行中", "running")
-        self._log(f"启动合并: src={cfg['src_dir']}  →  out={cfg['output_dir']}")
+        self._log(f"启动合并: src={cfg['src_dir']}  →  out={cfg['output_dir']}/<时间戳>")
 
         self._thread = QThread(self)
         self._worker = Worker(cfg)
@@ -870,8 +853,8 @@ class MainWindow(QMainWindow):
             self, APP_NAME,
             summary + "\n\n输出目录已自动打开。" if self.remember_chk.isChecked() else summary
         )
-        if self.remember_chk.isChecked():
-            self._open_in_file_manager(Path(self._current_cfg()["output_dir"]))
+        if self.remember_chk.isChecked() and result.actual_output_dir:
+            self._open_in_file_manager(result.actual_output_dir)
 
     def _on_failed(self, msg: str):
         self.run_btn.setEnabled(True)

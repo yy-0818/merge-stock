@@ -1,11 +1,15 @@
 """
 按 分类.xlsx 把 stock/2026-7-17/ 下的子表拼接成 A 列命名的大表，并按组归档。
 
-输出结构（每组一个文件夹）：
-  <OUTPUT_DIR>/<A列名>/
-    <A列名>.xlsx       ← 该组所有子表纵向拼接（保留各自表头，按辅助列过滤）
-    <子表名>.xlsx      ← 分类表 C 列起的源子表
+输出结构（每运行一次创建一个新的时间戳目录）：
+  <OUTPUT_DIR>/<YYYY-MM-DD_HH-MM-SS>/
+    <A列名>/
+      <A列名>.xlsx       ← 该组所有子表纵向拼接（保留各自表头，按辅助列过滤）
+      <子表名>.xlsx      ← 分类表 C 列起的源子表
+      ...
     ...
+
+每次运行自动创建新的时间戳目录，保留历史运行结果。
 
 规则：
 - 每个子表的最后两行通常为 (空行, 合计行)；合计行的特征是「型号 == '合计'」
@@ -118,13 +122,13 @@ def _is_dangerous_output_dir(p: Path) -> str | None:
     return None
 
 
-def _safe_prepare_output_dir(output_dir: Path, allow_unsafe: bool = False) -> Path:
-    """准备 output_dir（目录名自动加序号，避免覆盖）。
+def _prepare_output_dir(output_dir: Path, allow_unsafe: bool = False) -> Path:
+    """为每次运行创建新的带时间戳的输出目录。
 
-    安全策略(防误删):
+    策略:
     1. resolve 后,若等于 ~/Desktop ~/Documents ~/Downloads ~ / 之一 → 抛 UnsafeOutputDirError
-       (除非显式传入 allow_unsafe=True;此选项仅供 CLI 高级用户)
-    2. 若目录已存在,自动创建带序号的目录: _output, _output_1, _output_2, ...
+       (除非显式传入 allow_unsafe=True)
+    2. 在 output_dir 下创建新的带时间戳目录: YYYY-MM-DD_HH-MM-SS
     3. 返回实际使用的目录路径
     """
     if not allow_unsafe:
@@ -136,20 +140,13 @@ def _safe_prepare_output_dir(output_dir: Path, allow_unsafe: bool = False) -> Pa
                 f"  请新建一个子目录(例如 ~/work/stock/_output)再设置 output_dir。"
             )
 
-    if not output_dir.exists():
-        output_dir.mkdir(parents=True)
-        return output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 目录已存在 → 自动创建带序号的目录
-    base_name = output_dir.name
-    parent = output_dir.parent
-    counter = 0
-    candidate = output_dir
-    while candidate.exists():
-        counter += 1
-        candidate = parent / f"{base_name}_{counter}"
-    candidate.mkdir(parents=True)
-    return candidate
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_dir = output_dir / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
 
 @dataclass
@@ -161,6 +158,7 @@ class ProcessResult:
     files_copied: int = 0
     missing_files: list[str] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
+    actual_output_dir: Path | None = None  # 实际使用的输出目录（含时间戳）
 
     @property
     def ok(self) -> bool:
@@ -968,10 +966,10 @@ def process(cfg: dict, progress_cb: ProgressCb | None = None) -> ProcessResult:
     if not src_dir.exists():
         raise FileNotFoundError(f"源目录不存在: {src_dir}")
 
-    actual_output_dir = _safe_prepare_output_dir(output_dir, allow_unsafe=bool(cfg.get("allow_unsafe_output", False)))
-    if actual_output_dir != output_dir:
-        log.append(f"[注意] 输出目录已存在，自动使用: {actual_output_dir.name}")
-        output_dir = actual_output_dir
+    actual_output_dir = _prepare_output_dir(output_dir, allow_unsafe=bool(cfg.get("allow_unsafe_output", False)))
+    log.append(f"[输出] 使用目录: {actual_output_dir.name}")
+    output_dir = actual_output_dir
+    result.actual_output_dir = actual_output_dir
 
     available = {f[:-5] for f in os.listdir(src_dir) if f.lower().endswith(".xlsx")}
     groups = load_classification(index_file)
