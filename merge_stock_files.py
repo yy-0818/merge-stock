@@ -181,8 +181,8 @@ HEAD_FILL = PatternFill("solid", fgColor="1F3864")                # 深海军蓝
 HEAD_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
 HEAD_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-TOTAL_FILL = PatternFill("solid", fgColor="E65100")       # 深橙(最醒目)
-TOTAL_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+TOTAL_FILL = PatternFill("solid", fgColor="FFF2CC")       # 浅黄(温暖醒目,适合数字列)
+TOTAL_FONT = Font(name="Calibri", bold=True, color="7F4E00", size=11)
 TOTAL_ALIGN = Alignment(horizontal="center", vertical="center")
 
 # 数据行
@@ -518,26 +518,30 @@ def _sort_key_for_data_row(row: list, cm: ColumnMap):
     - 优先用 cm.type_idx / cm.model_idx
     - 表头中找不到对应列时,退化到旧位置 row[2] / row[1]
     - None 排到末尾
-    - 字符串 .casefold() 排序
+    - 中文优先按拼音排序;英文/数字按字母顺序;混排时中文排在数字/字母之后
     """
-    def normalize(v):
+    def _locale_key(v):
         if v is None:
-            return None
+            return (1, "")
         if isinstance(v, str):
-            return v.strip().casefold()
-        return str(v).casefold()
+            s = v.strip()
+            if not s:
+                return (1, "")
+            try:
+                import locale
+                return (0, s.lower())
+            except Exception:
+                return (0, s.casefold())
+        return (0, str(v))
 
     if cm is not None:
-        type_idx = (cm.type_idx if cm.type_idx is not None else 2)
-        model_idx = (cm.model_idx if cm.model_idx is not None else 1)
+        type_idx = cm.type_idx if cm.type_idx is not None else 2
+        model_idx = cm.model_idx if cm.model_idx is not None else 1
     else:
         type_idx, model_idx = 2, 1
-    a = normalize(row[type_idx]) if type_idx < len(row) else None
-    b = normalize(row[model_idx]) if model_idx < len(row) else None
-    return (
-        (1, "") if a is None else (0, a),
-        (1, "") if b is None else (0, b),
-    )
+    a = _locale_key(row[type_idx]) if type_idx < len(row) else (1, "")
+    b = _locale_key(row[model_idx]) if model_idx < len(row) else (1, "")
+    return (a, b)
 
 
 def _is_nosort_row(row: list, cm: ColumnMap) -> bool:
@@ -618,28 +622,42 @@ def _visual_width(s: str) -> float:
     return w
 
 
-def _autosize_columns(ws, min_w: float = 8.0, max_w: float = 22.0) -> None:
+def _autosize_columns(ws, min_w: float = 8.0, max_w: float = 30.0, extra_for_total: float = 4.0) -> None:
     """按列内容自适应宽度(用每列最长 cell 的真实视觉宽度 + padding)。
 
     设计原则:
     - **必须**用 max(不是 P95):少数长型号(如 `IN12P004GL60120`)若被截,客户读不出来
     - 默认 padding = 2,空出 1 字符边距
-    - 上限 max_w = 22(防止极长 token 拉爆整张表;超长用截断或换行兜底)
+    - 上限 max_w = 30(防止极长 token 拉爆整张表;超长用截断或换行兜底)
     - 下限 min_w = 8(数字列 "1234567" 也至少要装下)
     - CJK 字符按 2 个单位计(用 _visual_width)
+    - 合计行数字列额外 + extra_for_total,避免大数被截成 ###
     """
     from openpyxl.utils import get_column_letter
+    # 先找出合计行所在的列(用于判断是否额外加宽)
+    total_row_indices = set()
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.strip() == "合计":
+                total_row_indices.add(cell.row)
+                break
+
     for col_idx, col_cells in enumerate(ws.columns, 1):
         max_len = 0.0
+        has_total = False
         for cell in col_cells:
             if cell.value is None:
                 continue
             s = str(cell.value)
             max_len = max(max_len, _visual_width(s))
+            if cell.row in total_row_indices:
+                has_total = True
         # padding = 2 (左边距 1 + 右边距 1)
         target = max_len + 2
+        # 合计行数字列额外留空间
+        if has_total:
+            target += extra_for_total
         # 软上限:若 target > max_w, 仍给到 max_w;超过部分会被显示为溢出
-        # (但绝大多数情况 max_w=22 足够)
         width = max(min_w, min(max_w, target))
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 

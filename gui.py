@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QSizePolicy,
@@ -40,7 +39,7 @@ from PySide6.QtWidgets import (
 import merge_stock_files as core
 
 APP_NAME = "Stock Merge"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 # ------------------- macOS 毛玻璃支持 -------------------
 if sys.platform == "darwin":
@@ -50,46 +49,48 @@ if sys.platform == "darwin":
     except ImportError:
         NSVisualEffectView = None
 
-# ------------------- 主题（浅色毛玻璃 / 柔和渐变 / 现代轻盈） -------------------
-# 颜色按层级组织: 背景三阶 / 前景两阶 / 品牌色 / 语义色。
-# 所有阴影、圆角、间距都用 token 集中管理,改主题只改这里。
-BG_BASE = "#f0f2f5"          # 最底层（浅灰蓝）
+# ------------------- 主题（温暖现代 · 轻质感） -------------------
+BG_BASE = "#f5f6fa"          # 最底层（柔灰白）
 BG_PANEL = "#ffffff"          # 卡片底（纯白）
-BG_RAISED = "#f8f9fb"         # 升起层(输入框 / 按钮)
-BG_HOVER = "#f0f4ff"
-BG_FOCUS = "#e8efff"
-BG_GLASS = "#ffffffcc"        # 毛玻璃叠加（80% 透明白）
-BORDER = "#e0e4ec"
-BORDER_LIGHT = "#eaecef"
-TEXT_PRIMARY = "#1a1d23"
-TEXT_SECONDARY = "#5c6270"
-TEXT_MUTED = "#9ca3af"
-TEXT_DIM = "#b8bcc4"
+BG_RAISED = "#f0f1f6"         # 升起层(输入框 / 按钮)
+BG_HOVER = "#eef2ff"
+BG_FOCUS = "#e4e8ff"
+BG_GLASS = "#ffffffcc"
+BORDER = "#e2e4ec"
+BORDER_LIGHT = "#eceef4"
+BORDER_ACCENT = "#c7d2fe"    # 聚焦边框（薰衣草蓝）
+TEXT_PRIMARY = "#1e1f2e"
+TEXT_SECONDARY = "#5c6070"
+TEXT_MUTED = "#9498a8"
+TEXT_DIM = "#b4b8c4"
 
-# 品牌色 (蓝 -> 靛蓝 渐变)
-ACCENT_BLUE = "#4f8ef7"
-ACCENT_INDIGO = "#6366f1"
-ACCENT_PURPLE = "#8b5cf6"
-ACCENT_CYAN = "#06b6d4"
+# 品牌色 (天蓝 → 薰衣草 → 玫瑰)
+ACCENT_BLUE = "#5b8dee"
+ACCENT_INDIGO = "#7c85e8"
+ACCENT_PURPLE = "#9d8df0"
+ACCENT_ROSE = "#e88fa8"
 
 # 品牌渐变
 GRAD_BRAND = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_BLUE}, stop:0.5 {ACCENT_INDIGO}, stop:1 {ACCENT_PURPLE})"
-GRAD_BG_HERO = f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f8f9fb, stop:1 #f0f2f5)"
-GRAD_PROGRESS = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_BLUE}, stop:0.5 {ACCENT_INDIGO}, stop:1 {ACCENT_PURPLE})"
+GRAD_BG_HERO = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f8f9ff, stop:1 #f0f1f8)"
+GRAD_PROGRESS = f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_BLUE}, stop:0.4 {ACCENT_INDIGO}, stop:0.8 {ACCENT_PURPLE}, stop:1 {ACCENT_ROSE})"
+GRAD_HERO_ACCENT = f"qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ACCENT_BLUE}, stop:1 {ACCENT_INDIGO})"
 
 # 语义色
-SUCCESS = "#10b981"
-WARNING = "#f59e0b"
-DANGER = "#ef4444"
-INFO = "#3b82f6"
+SUCCESS = "#34c97a"
+SUCCESS_BG = "#e8faf0"
+WARNING = "#f5a623"
+WARNING_BG = "#fff8e6"
+DANGER = "#f0586a"
+DANGER_BG = "#fff0f2"
+INFO = "#5b8dee"
+INFO_BG = "#eef3ff"
 
 # 间距/圆角
 RADIUS_SM = 6
 RADIUS_MD = 10
 RADIUS_LG = 14
 RADIUS_XL = 18
-
-# 阴影(QSS 不直接支持 box-shadow,改用 QGraphicsDropShadowEffect 在 widget 上挂)
 
 
 # ------------------- 图标 (内联 SVG 工厂) -------------------
@@ -104,10 +105,11 @@ _ICONS: dict[str, str] = {
     "play": '<polygon points="6 4 20 12 6 20 6 4" fill="{color}" stroke="none"/>',
     "check": '<polyline points="4 12 10 18 20 6"/>',
     "alert": '<circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16" x2="12" y2="16"/>',
-    "sparkle": '<path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/>',
+    "sparkle": '<path d="M12 3l1.8 4.2L18 8l-4.2 1.8L12 14l-1.8-4.2L6 8l4.2-1.8z"/>',
     "shield": '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><polyline points="9 12 11 14 15 10"/>',
     "lock": '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
     "wand": '<path d="M3 21l12-12"/><path d="M14 7l3-3 3 3-3 3z"/><path d="M19 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
+    "merge": '<path d="M8 6h13M8 12h13M8 18h13M3 6v12M3 6h.01M3 12h.01M3 18h.01"/>',
 }
 
 
@@ -316,45 +318,47 @@ class MainWindow(QMainWindow):
         self._install_path_watchers()
 
         # 阴影:QSS 不支持 box-shadow,改用 QGraphicsDropShadowEffect
-        add_shadow(self.run_btn, blur=28, dy=6, color=QColor(34, 211, 238, 70))
-        add_shadow(self._badge, blur=14, dy=2, color=QColor(0, 0, 0, 80))
+        add_shadow(self.run_btn, blur=30, dy=6, color=QColor(92, 133, 232, 80))
+        add_shadow(self._badge, blur=14, dy=2, color=QColor(0, 0, 0, 60))
 
     # ----- Hero 顶部 -----
     def _build_hero(self) -> QFrame:
         hero = QFrame()
         hero.setObjectName("hero")
         layout = QHBoxLayout(hero)
-        layout.setContentsMargins(24, 18, 24, 18)
+        layout.setContentsMargins(28, 20, 28, 20)
         layout.setSpacing(20)
 
-        # 左侧:大标题 + 副标题
+        # 左侧:图标 + 大标题 + 副标题
         left = QVBoxLayout()
-        left.setSpacing(4)
+        left.setSpacing(6)
         title_row = QHBoxLayout()
-        title_row.setSpacing(10)
-        sparkle = QLabel()
-        sparkle.setPixmap(make_icon("sparkle", ACCENT_CYAN, size=26).pixmap(26, 26))
-        title = QLabel(APP_NAME)
-        title.setObjectName("heroTitle")
-        title_row.addWidget(sparkle)
-        title_row.addWidget(title)
+        title_row.setSpacing(12)
+        sparkle_lbl = QLabel()
+        sparkle_lbl.setPixmap(make_icon("sparkle", ACCENT_PURPLE, size=28).pixmap(28, 28))
+        sparkle_lbl.setFixedWidth(36)
+        sparkle_lbl.setAlignment(Qt.AlignCenter)
+        title_lbl = QLabel(APP_NAME)
+        title_lbl.setObjectName("heroTitle")
+        version_lbl = QLabel(f"v{APP_VERSION}")
+        version_lbl.setObjectName("heroVersion")
+        title_row.addWidget(sparkle_lbl)
+        title_row.addWidget(title_lbl)
+        title_row.addSpacing(4)
+        title_row.addWidget(version_lbl)
         title_row.addStretch(1)
         left.addLayout(title_row)
+
         subtitle = QLabel("按 分类.xlsx 分组合并 Excel 库存表   ·   一键导出按 A 列归类的合并文件")
         subtitle.setObjectName("heroSubtitle")
         subtitle.setWordWrap(True)
         left.addWidget(subtitle)
         left.addStretch(1)
 
-        # 右侧:版本徽章 + 安全徽章
+        # 右侧:安全徽章
         right = QVBoxLayout()
         right.setSpacing(8)
         right.setAlignment(Qt.AlignTop | Qt.AlignRight)
-        ver = QLabel(f"v{APP_VERSION}")
-        ver.setObjectName("versionPill")
-        ver.setAlignment(Qt.AlignCenter)
-        ver.setMinimumWidth(72)
-        right.addWidget(ver, 0, Qt.AlignRight)
         safety = QLabel("防误删已启用")
         safety.setObjectName("safetyPill")
         safety.setAlignment(Qt.AlignCenter)
@@ -375,7 +379,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
 
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(make_icon(icon_name, ACCENT_CYAN, size=20).pixmap(20, 20))
+        icon_lbl.setPixmap(make_icon(icon_name, ACCENT_PURPLE, size=20).pixmap(20, 20))
         icon_lbl.setFixedWidth(24)
         icon_lbl.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_lbl)
@@ -434,10 +438,6 @@ class MainWindow(QMainWindow):
         ))
 
     def _apply_qss(self):
-        """全局 QSS。QSS 不支持 box-shadow / transform / animation,所以:
-        - 投影靠 QGraphicsDropShadowEffect (在 build_ui 时挂)
-        - 按钮 hover 效果靠 :hover 状态 + 颜色变化代替 transform
-        """
         self.setStyleSheet(f"""
             /* ---------- 全局基色 ---------- */
             QMainWindow, QWidget {{
@@ -453,9 +453,10 @@ class MainWindow(QMainWindow):
             QToolTip {{
                 background: {BG_PANEL};
                 color: {TEXT_PRIMARY};
-                border: 1px solid {BORDER_LIGHT};
-                border-radius: 6px;
-                padding: 6px 8px;
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 12px;
             }}
 
             /* ---------- Hero 顶部 ---------- */
@@ -465,29 +466,29 @@ class MainWindow(QMainWindow):
                 border-radius: {RADIUS_XL}px;
             }}
             QFrame#hero QLabel#heroTitle {{
-                font-size: 24px;
-                font-weight: 700;
+                font-size: 26px;
+                font-weight: 800;
                 color: {TEXT_PRIMARY};
-                letter-spacing: -0.3px;
+                letter-spacing: -0.5px;
                 background: transparent;
+            }}
+            QFrame#hero QLabel#heroVersion {{
+                font-size: 11px;
+                font-weight: 600;
+                color: {ACCENT_PURPLE};
+                background: transparent;
+                padding: 3px 10px;
+                border-radius: 10px;
+                border: 1px solid {BORDER_ACCENT};
             }}
             QFrame#hero QLabel#heroSubtitle {{
-                font-size: 13px;
+                font-size: 12.5px;
                 color: {TEXT_SECONDARY};
                 background: transparent;
-            }}
-            QLabel#versionPill {{
-                background: {BG_RAISED};
-                color: {TEXT_SECONDARY};
-                border: 1px solid {BORDER_LIGHT};
-                border-radius: 12px;
-                padding: 5px 12px;
-                font-weight: 600;
-                font-size: 11px;
-                letter-spacing: 0.5px;
+                letter-spacing: 0.1px;
             }}
             QLabel#safetyPill {{
-                background: {GRAD_BRAND};
+                background: {GRAD_HERO_ACCENT};
                 color: white;
                 border: none;
                 border-radius: 12px;
@@ -502,10 +503,11 @@ class MainWindow(QMainWindow):
                 background: {BG_PANEL};
                 border: 1px solid {BORDER};
                 border-radius: {RADIUS_MD}px;
+                padding: 2px;
             }}
             QFrame#pathCard:hover {{
-                border-color: {BORDER_LIGHT};
-                background: {BG_RAISED};
+                border-color: {BORDER_ACCENT};
+                background: {BG_PANEL};
             }}
             QFrame#pathCard QLabel#cardLabel {{
                 color: {TEXT_PRIMARY};
@@ -524,36 +526,37 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 padding: 9px 12px;
                 color: {TEXT_PRIMARY};
-                selection-background-color: {ACCENT_CYAN};
-                selection-color: #061b1c;
+                selection-background-color: {ACCENT_INDIGO};
+                selection-color: white;
             }}
             QLineEdit#pathInput:focus {{
-                border: 1px solid {ACCENT_CYAN};
+                border: 1.5px solid {ACCENT_INDIGO};
                 background: {BG_FOCUS};
             }}
             QLineEdit#pathInput[hasValue="true"] {{
-                border-color: {BORDER_LIGHT};
+                border-color: {BORDER_ACCENT};
             }}
 
             /* ---------- 次级按钮 (浏览 / 清空) ---------- */
             QPushButton#ghostBtn {{
                 background: {BG_RAISED};
-                border: 1px solid {BORDER_LIGHT};
+                border: 1px solid {BORDER};
                 border-radius: 8px;
                 padding: 8px 16px;
                 color: {TEXT_SECONDARY};
                 font-weight: 500;
+                font-size: 12.5px;
             }}
             QPushButton#ghostBtn:hover {{
                 background: {BG_HOVER};
-                color: {TEXT_PRIMARY};
-                border-color: {TEXT_MUTED};
+                color: {ACCENT_INDIGO};
+                border-color: {BORDER_ACCENT};
             }}
             QPushButton#ghostBtn:pressed {{
                 background: {BG_FOCUS};
             }}
 
-            /* ---------- 主按钮 (渐变 + 大圆角) ---------- */
+            /* ---------- 主按钮 (渐变 + 投影) ---------- */
             QPushButton#runBtn {{
                 background: {GRAD_BRAND};
                 border: none;
@@ -561,7 +564,7 @@ class MainWindow(QMainWindow):
                 color: white;
                 font-size: 15px;
                 font-weight: 700;
-                letter-spacing: 1px;
+                letter-spacing: 1.2px;
                 padding: 4px 18px;
                 text-align: center;
             }}
@@ -576,7 +579,7 @@ class MainWindow(QMainWindow):
                 color: {TEXT_DIM};
             }}
 
-            /* ---------- 进度条 (流光渐变) ---------- */
+            /* ---------- 进度条 (渐变条) ---------- */
             QProgressBar#progress {{
                 background: {BG_RAISED};
                 border: 1px solid {BORDER};
@@ -585,6 +588,7 @@ class MainWindow(QMainWindow):
                 color: {TEXT_PRIMARY};
                 height: 22px;
                 font-weight: 600;
+                font-size: 12px;
             }}
             QProgressBar#progress::chunk {{
                 background: {GRAD_PROGRESS};
@@ -596,20 +600,20 @@ class MainWindow(QMainWindow):
             QLabel#badge {{
                 background: {BG_RAISED};
                 color: {TEXT_SECONDARY};
-                border: 1px solid {BORDER_LIGHT};
+                border: 1px solid {BORDER};
                 border-radius: 12px;
                 padding: 6px 14px;
                 font-weight: 700;
                 font-size: 11px;
                 letter-spacing: 0.5px;
             }}
-            QLabel#badge[kind="ready"]   {{ background: {BG_RAISED};        color: {TEXT_SECONDARY}; border-color: {BORDER_LIGHT}; }}
-            QLabel#badge[kind="running"] {{ background: {ACCENT_BLUE};      color: white;          border: none; }}
-            QLabel#badge[kind="ok"]      {{ background: {SUCCESS};          color: white;          border: none; }}
-            QLabel#badge[kind="err"]     {{ background: {DANGER};           color: white;          border: none; }}
-            QLabel#badge[kind="warn"]    {{ background: {WARNING};          color: white;          border: none; }}
+            QLabel#badge[kind="ready"]   {{ background: {BG_RAISED};    color: {TEXT_SECONDARY}; border-color: {BORDER}; }}
+            QLabel#badge[kind="running"] {{ background: {ACCENT_BLUE};  color: white;            border: none; }}
+            QLabel#badge[kind="ok"]      {{ background: {SUCCESS};      color: white;            border: none; }}
+            QLabel#badge[kind="err"]     {{ background: {DANGER};       color: white;            border: none; }}
+            QLabel#badge[kind="warn"]    {{ background: {WARNING};      color: white;            border: none; }}
 
-            /* ---------- 选项 (列数 / 复选) ---------- */
+            /* ---------- 选项条 ---------- */
             QLabel#logTitle {{
                 color: {TEXT_SECONDARY};
                 font-weight: 600;
@@ -618,15 +622,16 @@ class MainWindow(QMainWindow):
             }}
             QSpinBox#numSpin {{
                 background: {BG_RAISED};
-                border: 1px solid {BORDER_LIGHT};
+                border: 1px solid {BORDER};
                 border-radius: 8px;
                 padding: 6px 12px;
                 color: {TEXT_PRIMARY};
-                selection-background-color: {ACCENT_CYAN};
+                selection-background-color: {ACCENT_INDIGO};
                 min-width: 70px;
+                font-weight: 600;
             }}
             QSpinBox#numSpin:focus {{
-                border: 1px solid {ACCENT_CYAN};
+                border: 1.5px solid {ACCENT_INDIGO};
             }}
             QSpinBox#numSpin::up-button, QSpinBox#numSpin::down-button {{
                 background: transparent;
@@ -637,20 +642,21 @@ class MainWindow(QMainWindow):
                 color: {TEXT_SECONDARY};
                 spacing: 8px;
                 background: transparent;
+                font-size: 12.5px;
             }}
             QCheckBox#rememberChk::indicator {{
                 width: 18px;
                 height: 18px;
-                border: 1.5px solid {BORDER_LIGHT};
+                border: 1.5px solid {BORDER};
                 border-radius: 5px;
                 background: {BG_RAISED};
             }}
             QCheckBox#rememberChk::indicator:hover {{
-                border-color: {ACCENT_CYAN};
+                border-color: {ACCENT_INDIGO};
             }}
             QCheckBox#rememberChk::indicator:checked {{
-                background: {ACCENT_CYAN};
-                border: 1.5px solid {ACCENT_CYAN};
+                background: {ACCENT_INDIGO};
+                border: 1.5px solid {ACCENT_INDIGO};
                 image: none;
             }}
             QCheckBox#rememberChk:checked {{
@@ -666,6 +672,7 @@ class MainWindow(QMainWindow):
                 color: {TEXT_SECONDARY};
                 selection-background-color: {ACCENT_PURPLE};
                 selection-color: white;
+                line-height: 1.5;
             }}
 
             /* ---------- 状态栏 ---------- */
@@ -794,8 +801,7 @@ class MainWindow(QMainWindow):
         cursor = self.log_view.textCursor()
         cursor.movePosition(QTextCursor.End)
         fmt = QTextCharFormat()
-        lower = line.lower()
-        if any(k in line for k in ("[错误]", "Exception", "失败", "ERROR", "Traceback")):
+        if any(k in line for k in ("[错误]", "Exception", "失败", "ERROR", "Traceback", "✗")):
             fmt.setForeground(QColor(DANGER))
             self._set_badge("异常", "err")
         elif any(k in line for k in ("[警告]", "警告", "跳过", "缺文件", "WARN")):
@@ -805,9 +811,9 @@ class MainWindow(QMainWindow):
             fmt.setForeground(QColor(SUCCESS))
             self._set_badge("已完成", "ok")
         elif any(k in line for k in ("[安全]", "防误删", "BLOCKED")):
-            fmt.setForeground(QColor(ACCENT_CYAN))
-        elif line.startswith("[过滤]") or line.startswith("=== "):
             fmt.setForeground(QColor(ACCENT_PURPLE))
+        elif line.startswith("[过滤]") or line.startswith("=== "):
+            fmt.setForeground(QColor(ACCENT_INDIGO))
         elif line.startswith("[") and "]" in line and len(line.split("]")[0]) < 12:
             fmt.setForeground(QColor(INFO))
         cursor.insertText(text, fmt)
@@ -853,7 +859,8 @@ class MainWindow(QMainWindow):
     def _on_run_clicked(self):
         err = self._validate()
         if err:
-            QMessageBox.warning(self, APP_NAME, err)
+            self._log(f"[校验] {err}")
+            self._set_badge("待填写", "warn")
             return
         cfg = self._current_cfg()
         out = Path(cfg["output_dir"])
@@ -899,10 +906,6 @@ class MainWindow(QMainWindow):
         self.progress.setValue(self.progress.maximum())
         self.progress.setFormat("  ✓ 完成  ·  100%")
         self._set_badge("完成", "ok")
-        QMessageBox.information(
-            self, APP_NAME,
-            summary + "\n\n输出目录已自动打开。" if self.remember_chk.isChecked() else summary
-        )
         if self.remember_chk.isChecked() and result.actual_output_dir:
             self._open_in_file_manager(result.actual_output_dir)
 
@@ -911,7 +914,7 @@ class MainWindow(QMainWindow):
         self.run_btn.setText("  开始合并")
         self._log(f"[错误] {msg}")
         self._set_badge("失败", "err")
-        QMessageBox.critical(self, APP_NAME, f"合并失败:\n\n{msg}")
+        self.progress.setFormat("  ✗ 失败")
 
     @staticmethod
     def _open_in_file_manager(p: Path):
@@ -941,9 +944,6 @@ def main():
 
     if error_msg:
         print(f"[启动错误] {error_msg}", file=sys.stderr)
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.critical(None, f"{APP_NAME} 启动失败",
-                           f"无法初始化界面:\n{error_msg}\n\n请确保 Qt 插件可用。")
         sys.exit(1)
 
     win.show()
