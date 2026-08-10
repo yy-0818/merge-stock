@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QStatusBar,
     QTextEdit,
     QVBoxLayout,
@@ -244,18 +243,12 @@ class MainWindow(QMainWindow):
         # 选项条
         opts_row = QHBoxLayout()
         opts_row.setSpacing(20)
-        self._num_label = QLabel("统一列数")
-        self._num_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: 600;")
-        self.num_spin = QSpinBox()
-        self.num_spin.setRange(1, 200)
-        self.num_spin.setValue(41)
-        self.num_spin.setObjectName("numSpin")
-        self.num_spin.valueChanged.connect(self._persist_config)
+        self._cols_label = QLabel("列数: 自动(按拆分数据 + 剔除全空列)")
+        self._cols_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: 600;")
         self.remember_chk = QCheckBox("完成后自动打开输出目录")
         self.remember_chk.setChecked(True)
         self.remember_chk.setObjectName("rememberChk")
-        opts_row.addWidget(self._num_label)
-        opts_row.addWidget(self.num_spin)
+        opts_row.addWidget(self._cols_label)
         opts_row.addStretch(1)
         opts_row.addWidget(self.remember_chk)
         root.addLayout(opts_row)
@@ -620,24 +613,6 @@ class MainWindow(QMainWindow):
                 font-size: 12px;
                 letter-spacing: 0.5px;
             }}
-            QSpinBox#numSpin {{
-                background: {BG_RAISED};
-                border: 1px solid {BORDER};
-                border-radius: 8px;
-                padding: 6px 12px;
-                color: {TEXT_PRIMARY};
-                selection-background-color: {ACCENT_INDIGO};
-                min-width: 70px;
-                font-weight: 600;
-            }}
-            QSpinBox#numSpin:focus {{
-                border: 1.5px solid {ACCENT_INDIGO};
-            }}
-            QSpinBox#numSpin::up-button, QSpinBox#numSpin::down-button {{
-                background: transparent;
-                border: none;
-                width: 16px;
-            }}
             QCheckBox#rememberChk {{
                 color: {TEXT_SECONDARY};
                 spacing: 8px;
@@ -752,10 +727,6 @@ class MainWindow(QMainWindow):
         self.src_edit.setText(cfg.get("src_dir", ""))
         self.idx_edit.setText(cfg.get("index_file", ""))
         self.out_edit.setText(cfg.get("output_dir", ""))
-        try:
-            self.num_spin.setValue(int(cfg.get("num_cols", 41)))
-        except Exception:
-            pass
         # 把清理过的 cfg 立刻回写,避免下次启动再触发同样的"被修改成危险路径"问题
         try:
             core.save_config(cfg)
@@ -768,11 +739,11 @@ class MainWindow(QMainWindow):
         self._set_badge("就绪", "ready")
 
     def _current_cfg(self) -> dict:
+        # 列数不再手动配置:由 core.process 自动按拆分数据决定 + 剔除全空列
         return {
             "src_dir": self.src_edit.text().strip(),
             "index_file": self.idx_edit.text().strip(),
             "output_dir": self.out_edit.text().strip(),
-            "num_cols": self.num_spin.value(),
         }
 
     def _persist_config(self):

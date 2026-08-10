@@ -15,8 +15,8 @@
 - 每个子表的最后两行通常为 (空行, 合计行)；合计行的特征是「型号 == '合计'」
   兜底：当某张子表没有此字样时，取末尾倒数第二个非空数据行
 - 辅助列（最后一列）= 显示 → 保留；不显示 → 丢弃；合计行保留
-- 写表时统一丢掉辅助列（输出列数 = num_cols - 1）
-- 行内容：补齐 / 截断到统一列数 NUM_COLS（默认 41）；完全空行跳过
+- 写表时统一丢掉辅助列
+- 行内容：保留源表真实宽度，不做补齐/截断；完全空行跳过
 
 样式（在合并文件上自动应用）：
 - 表头行：深蓝底 #4472C4 + 白字 + 粗体 + 居中
@@ -26,6 +26,12 @@
 - 全表灰色细边框
 - 冻结第 1 行
 - 列宽按内容自动估算，上限 50
+
+拆分逻辑（自动）：
+- 列数不再手动指定：扫描组内所有源子表的「真实最大列数」作为合并目标列数
+- 空列自动移除：若某一列在整组合并数据中**所有行均为空**（包含表头），则直接剔除该列，
+  不写入输出表，达到压缩列数优化展示的效果
+- 仍保留原有行为：辅助列（显示/不显示控制）、换算率/备注列始终被剔除
 
 本模块提供：
   load_config()         -> dict
@@ -59,7 +65,6 @@ DEFAULT_CONFIG = {
     "src_dir": "",
     "index_file": "",
     "output_dir": "",
-    "num_cols": 41,
 }
 
 
@@ -345,30 +350,191 @@ def _is_blank_row(row: list) -> bool:
     return all(v is None or (isinstance(v, str) and not v.strip()) for v in row)
 
 
-def _read_sub_file_rows(path: Path, num_cols: int) -> tuple[list[list], ColumnMap]:
+def _is_blank_cell(v, treat_zero_as_blank: bool = False) -> bool:
+    """单元格是否视为「空」:None、空字符串、全空白字符串。
+    treat_zero_as_blank=True 时,数值 0 也视为空(用于预剔除阶段清理纯 0 占位列)。
+
+    默认 False 是为了不破坏"业务上的 0 值"(0 库存/0 数量)被保留;
+    但当整列都是 0 时多半是占位列,可以剔除。
+    """
+    if v is None:
+        return True
+    if isinstance(v, str) and not v.strip():
+        return True
+    if treat_zero_as_blank and isinstance(v, (int, float)) and v == 0:
+        return True
+    return False
+
+def _read_sub_file_rows(path: Path, log: list[str] | None = None) -> tuple[list[list], ColumnMap]:
     """读取子表全部行 + 解析表头列映射。
 
     返回 (rows, column_map):
-    - rows: 已补齐 / 截断到 num_cols,跳过完全空行的二维数组
+    - rows: 跳过完全空行的二维数组，列数=该子表的**真实最大列数**(保留尾部真实空 cell)
+      不再做「补齐/截断到固定 num_cols」；后续由调用方根据组内所有子表的 max 决定输出列数。
     - column_map: 「型号」「类型」「辅助列」的位置(基于表头名字识别,源表列顺序可变化)
+
+    log: 可选,接收 [去空行] 之类的诊断日志(写入调用方的日志列表)
     """
+    if log is None:
+        log = []
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb.active
     raw: list[list] = []
     header: list | None = None
     for row in ws.iter_rows(values_only=True):
         row_list = list(row)
-        if len(row_list) < num_cols:
-            row_list.extend([None] * (num_cols - len(row_list)))
-        else:
-            row_list = row_list[:num_cols]
+        # 不再补齐/截断到固定列数;保留源表的真实宽度。
         if _is_blank_row(row_list):
             continue
         if header is None:
             header = row_list
         raw.append(row_list)
     cm = _parse_column_map(header) if header else ColumnMap()
+    # ===== 移除「型号列空」的伪数据行 =====
+    # 拆分脚本有时会在每张子表末尾(或段间)留下"型号列空、但 1级/2级 有 0"的占位行
+    # (合计行的前一行/段尾回车)。这些不是真实型号 → 应剔除。
+    # 仅当型号列存在且唯一时执行。
+    if cm.model_idx is not None and raw and len(raw) >= 2:
+        before = len(raw) - 1   # 减表头
+        kept: list[list] = [raw[0]]
+        for r in raw[1:]:
+            if cm.model_idx >= len(r):
+                continue
+            v = r[cm.model_idx]
+            # 型号列空:None / 空字符串 / 0 都算空(型号必须是字符串,数字 0 是无效占位)
+            if v is None or (isinstance(v, str) and not v.strip()):
+                continue
+            if isinstance(v, (int, float)) and v == 0:
+                continue
+            kept.append(r)
+        after = len(kept) - 1
+        if before != after:
+            log.append(
+                f"  [去空行-型号] {path.name}: 移除 {before - after} 个型号列空行 "
+                f"({before} → {after} 数据行)"
+            )
+        raw = kept
     return raw, cm
+
+
+# 用户明确要求:**无论数据是否为空,以下列名一律不展示**(始终丢弃)
+ALWAYS_DROP_HEADER_ALIASES: tuple[str, ...] = ("辅助列", "辅助2", "换算率", "备注")
+
+
+def _always_drop_indices(header: list) -> list[int]:
+    """根据表头名字返回需要「始终丢弃」的列下标(0-based)。
+
+    规则:遍历 header,凡是名字归一化后命中 ALWAYS_DROP_HEADER_ALIASES 任一项的列都丢弃。
+    用于在合并前先把"用户明确不展示"的列从每张子表中剔除,避免它们污染最大列宽计算
+    / 干扰后续空列扫描 / 让最终表格出现不希望展示的列。
+    """
+    if not header:
+        return []
+    targets = {_normalize_header(a) for a in ALWAYS_DROP_HEADER_ALIASES}
+    return [i for i, name in enumerate(header) if _normalize_header(name) in targets]
+
+
+def _compute_max_cols(per_sub_rows: list[list[list]]) -> int:
+    """根据组内所有子表的真实宽度,返回目标列数(所有子表的最大行宽)。
+
+    设计原则:不让人手动指定列数;以拆分数据本身的实际宽度为准。
+    若全为空表(没有任何行),兜底返回 0。
+    """
+    max_w = 0
+    for rows in per_sub_rows:
+        for r in rows:
+            if len(r) > max_w:
+                max_w = len(r)
+    return max_w
+
+
+def _drop_blank_columns(
+    header: list, rows: list[list]
+) -> tuple[list, list[list], list[int]]:
+    """从「表头 + 数据行」中删除「全空列」,并返回剔除后的表头、数据、所有被删除的列索引(原 0-based)。
+
+    判定:对每个列下标 j,若 rows[*][j] 在**所有数据行**中都为空,则该列视为「全空列」并移除
+    (表头是否有值不影响判定 —— 表头为空但数据有值要保留;表头有值但数据全空也要移除,
+    保留空表头会让表头出现"空洞",不符合展示习惯)。
+
+    返回:
+        new_header: 压缩后的表头
+        new_rows:   压缩后的所有数据行(每行已被裁短到 new_header 长度)
+        removed_idx: 被删除的列在原表中的 0-based 下标(升序)
+    """
+    if not header and not rows:
+        return header, rows, []
+    width = max(
+        len(header),
+        max((len(r) for r in rows), default=0),
+    )
+    # 1. 判定哪些列要删:数据行该列全部为空(表头不影响)
+    blank_cols: set[int] = set()
+    for j in range(width):
+        col_all_blank = True
+        for r in rows:
+            if j < len(r) and not _is_blank_cell(r[j]):
+                col_all_blank = False
+                break
+        if col_all_blank:
+            blank_cols.add(j)
+    if not blank_cols:
+        return header, rows, []
+    # 2. 重建压缩后的 header + rows
+    keep = [j for j in range(width) if j not in blank_cols]
+    new_header = [header[j] if j < len(header) else None for j in keep]
+    new_rows: list[list] = []
+    for r in rows:
+        new_rows.append([r[j] if j < len(r) else None for j in keep])
+    return new_header, new_rows, sorted(blank_cols)
+
+
+def _remap_column_map(cm: ColumnMap, removed: list[int]) -> ColumnMap:
+    """对 ColumnMap 的列索引做「压缩后重映射」。
+
+    - removed: 已删除列的 0-based 索引(升序)
+    - 索引 >= 0 的字段(model/type/helper/nosort)若被删 → 置 None / 默认值
+    - 其余字段按"被删列数偏移量"前移
+    """
+    if not removed:
+        return cm
+    return _remap_column_map_with_drop(cm, removed)
+
+
+def _remap_column_map_with_drop(cm: ColumnMap, drop: list[int]) -> ColumnMap:
+    """根据"被丢弃列下标集合 drop"(0-based,升序)对 ColumnMap 的列索引做重映射。
+
+    与 _remap_column_map 等价 —— 拆分命名仅为了在按"白名单列名预剔除"场景下语义更清晰。
+    """
+    if not drop:
+        return cm
+    removed_set = set(drop)
+    def _shift(idx: int | None) -> int | None:
+        if idx is None or idx < 0:
+            return idx
+        if idx in removed_set:
+            return None
+        return idx - sum(1 for x in drop if x < idx)
+
+    new_cm = ColumnMap(
+        model_idx=_shift(cm.model_idx),
+        type_idx=_shift(cm.type_idx),
+        helper_idx=_shift(cm.helper_idx) if cm.helper_idx not in removed_set else DEFAULT_HELPER_COL_IDX,
+        nosort_idx=_shift(cm.nosort_idx),
+        max_used_col_idx=max(0, cm.max_used_col_idx - len(drop)),
+    )
+    return new_cm
+
+
+def _strip_columns(row: list, drop_idx: list[int]) -> list:
+    """从单行中按 drop_idx(0-based,升序)丢弃列,返回新行。
+
+    行长度可能 < max(drop_idx),不在范围内的下标自动跳过(不会越界)。
+    """
+    if not drop_idx:
+        return row
+    drop_set = set(drop_idx)
+    return [v for j, v in enumerate(row) if j not in drop_set]
 
 
 # ------------------- 表头列名识别 (容错:源表列位置可变化) -------------------
@@ -800,10 +966,17 @@ def _build_merged_file(
     available: set[str],
     src_dir: Path,
     output_dir: Path,
-    num_cols: int,
     log: list[str],
 ) -> tuple[Path, int, int] | None:
-    """返回 (path, rows_kept, rows_dropped). 仍然无数据时返回 None."""
+    """返回 (path, rows_kept, rows_dropped). 仍然无数据时返回 None.
+
+    拆分列数逻辑(2026-08 优化):
+    1) 先按表头名始终丢弃:辅助列 / 辅助2 / 换算率 / 备注 — 这些列用户明确不要展示,
+       不论数据是否为空一律从每张子表中剔除(同时调整 ColumnMap 索引)
+    2) 列数自动确定:扫描组内所有子表(含已剔除辅助列)的真实最大列数,作为合并目标列数
+    3) 空列自动移除:对整组合并结果(含所有子表的表头 + 数据 + 合计)做"数据行全空列"扫描,
+       命中后整列剔除(同时更新 ColumnMap 的索引),压缩列数优化展示
+    """
     out_name = group["a_col"]
     if not out_name:
         return None
@@ -820,7 +993,6 @@ def _build_merged_file(
     ws.delete_rows(1)
     current_row = 0
 
-    output_col_count = num_cols - 1  # 丢掉最后一列(即辅助列)
     sections: list[dict] = []
     rows_kept_total = 0
     rows_dropped_total = 0
@@ -833,7 +1005,121 @@ def _build_merged_file(
         if sub not in available or not candidate.exists():
             log.append(f"  [跳过-缺文件] {sub}")
             continue
-        raw_rows, cm = _read_sub_file_rows(candidate, num_cols)
+        raw_rows, cm = _read_sub_file_rows(candidate, log)
+
+        # ===== 子表内「色号列全空」伪空行剔除 =====
+        # 规则:色号列(D1..D22 / A / A1..A12 / A31 等,即 _is_data_column_name 命中但
+        # 不含 1级/2级)中,所有列都为空 → 该行算伪空行,剔除。
+        # 1级/2级 有 0 不算"色号列"—— 1级/2级 是库存等级,与具体色号无关。
+        # 重要:必须在「预剔除空列」之前做 —— 否则像 Y客户2级这种"整张表色号列全空"
+        # 的子表会被预剔除把 1级/2级+色号列整列删掉,这里 header 已无 D1..A14
+        # 等槽位 → 找不到 color_indices → 永不剔除。
+        if raw_rows and len(raw_rows) >= 2 and cm.model_idx is not None:
+            sub_header = raw_rows[0]
+            color_indices = [
+                i for i, name in enumerate(sub_header)
+                if _is_data_column_name(name)
+                and _normalize_header(name) not in ("1级", "2级", "一级", "二级", "等级1", "等级2")
+            ]
+            l1l2_indices = [
+                i for i, name in enumerate(sub_header)
+                if _normalize_header(name) in ("1级", "2级", "一级", "二级", "等级1", "等级2")
+            ]
+            base_data_indices = [
+                i for i, name in enumerate(sub_header)
+                if _is_data_column_name(name)
+            ]
+            use_l1l2 = bool(l1l2_indices)
+            if color_indices:
+                before = len(raw_rows) - 1
+                kept_rows: list[list] = [raw_rows[0]]
+                for r in raw_rows[1:]:
+                    # 色号列判定:把 0/None/空字符串 都视为空(色号列里 0 = 没库存)
+                    color_all_blank = True
+                    for i in color_indices:
+                        if i < len(r) and not _is_blank_cell(r[i], treat_zero_as_blank=True):
+                            color_all_blank = False
+                            break
+                    if not color_all_blank:
+                        kept_rows.append(r)
+                        continue
+                    # 色号列全空 → 进一步判定该行是否有任何库存
+                    if use_l1l2:
+                        has_l1l2 = False
+                        for i in l1l2_indices:
+                            if i < len(r):
+                                v = r[i]
+                                if isinstance(v, (int, float)) and v > 0:
+                                    has_l1l2 = True
+                                    break
+                        if not has_l1l2:
+                            continue  # 剔除
+                    else:
+                        has_any = False
+                        for i in base_data_indices:
+                            if i < len(r):
+                                v = r[i]
+                                if isinstance(v, (int, float)) and v > 0:
+                                    has_any = True
+                                    break
+                        if not has_any:
+                            continue  # 剔除
+                    kept_rows.append(r)
+                after = len(kept_rows) - 1
+                if before != after:
+                    log.append(
+                        f"  [去空行-色号] {sub}: 移除 {before - after} 个色号列全空行 "
+                        f"({before} → {after} 数据行)"
+                    )
+                raw_rows = kept_rows
+
+        # ===== 始终丢弃用户明确不展示的列 =====
+        # (辅助列 / 辅助2 / 换算率 / 备注) — 不论数据是否有值,按表头名命中即剔除。
+        # 不同子表的列顺序可能不同,所以每张子表独立识别;同时把 cm 索引按偏移前移,
+        # 保证"合计行判定 / 排序键"等仍指对正确位置。
+        sub_header = raw_rows[0] if raw_rows else None
+        sub_drop_idx = _always_drop_indices(sub_header)
+        if sub_drop_idx:
+            log.append(
+                f"  [预剔除] {sub}: 按表头名丢弃 {len(sub_drop_idx)} 列 "
+                f"(列号 {sub_drop_idx}) → 列数 {len(sub_header) - len(sub_drop_idx)}"
+            )
+            raw_rows = [_strip_columns(r, sub_drop_idx) for r in raw_rows]
+            # cm 索引前移(指向新位置);用 sub_drop_idx 的下标集合做"左侧计数后减一"重映射
+            cm = _remap_column_map_with_drop(cm, sub_drop_idx)
+
+        # ===== 子表内「数据全空列」预剔除 =====
+        # 拆分脚本有时会产生"占位列"(比如每日库存场景里的 D1-D28 / A1-A14 / A31
+        # 等扩展位,大部分行该列为空)。这些空列在不同子表的位置不完全一致,
+        # 导致后面"整组合并后的全空列扫描"无法剔除(不同子表错位无法全部为空)。
+        # 在此按"本子表内数据行全空"先压缩一遍,可显著减少最终表格的空洞列。
+        # 判定:对每列 j,只要子表数据行中存在 1 个非空 cell,该列就保留。
+        # 表头是否为空不影响 —— 因为表头本身可能就没值但位置是"必须留的"语义槽。
+        if raw_rows and len(raw_rows) >= 2:
+            sub_data = raw_rows[1:]
+            # 宽度按表头长度和数据行最大长度取
+            width = max(
+                len(raw_rows[0]) if raw_rows[0] else 0,
+                max((len(r) for r in sub_data), default=0),
+            )
+            blank_cols: set[int] = set()
+            for j in range(width):
+                # treat_zero_as_blank=True:整列都是 None/空字符串/0 时算「全空」
+                # —— 用于清理拆分脚本产生的「纯占位 0 序列列」(如 D12-D29 全是 0)
+                if all(
+                    j >= len(r) or _is_blank_cell(r[j], treat_zero_as_blank=True)
+                    for r in sub_data
+                ):
+                    blank_cols.add(j)
+            if blank_cols:
+                drop_sorted = sorted(blank_cols)
+                log.append(
+                    f"  [预剔除] {sub}: 数据全空列丢弃 {len(drop_sorted)} 列 "
+                    f"(列号 {drop_sorted}) → 列数 {width - len(drop_sorted)}"
+                )
+                raw_rows = [_strip_columns(r, drop_sorted) for r in raw_rows]
+                cm = _remap_column_map_with_drop(cm, drop_sorted)
+
         if global_cm is None:
             global_cm = cm
         header_row, data_rows, total_rows, drop, total = _filter_rows(raw_rows, cm)
@@ -847,50 +1133,27 @@ def _build_merged_file(
         if not kept_rows:
             continue
 
-        # 决定"丢哪些列":
-        # 1) 辅助列 helper_idx (默认最后一列)
-        # 2) 排序列 nosort_idx (若存在)
-        # 3) 表头名为「换算率 / 备注」(用户明确要求删除,不展示)
-        # 4) 兜底:cm 啥都没识别时丢最后一列(向后兼容老数据)
-        # 5) 保留源表所有其它列,包括全 None 的空列(用户明确要求保留做视觉对齐)
-        drop_cols: set[int] = set()
-        h_idx = cm.helper_idx
-        if h_idx is not None:
-            resolved = h_idx if h_idx >= 0 else (num_cols - 1 if num_cols > 0 else -1)
-            if resolved >= 0:
-                drop_cols.add(resolved)
-        n_idx = cm.nosort_idx
-        if n_idx is not None and 0 <= n_idx < num_cols:
-            drop_cols.add(n_idx)
-        # 丢掉名为"换算率"或"备注"的列(遍历表头找)
-        hidden_aliases_norm = {_normalize_header(a) for a in ("换算率", "换算", "备注")}
-        # header_row 是来自 raw_rows[0], 索引 0-based
-        if cm.helper_idx is not None and header_row:
-            for i, name in enumerate(header_row):
-                if _normalize_header(name) in hidden_aliases_norm:
-                    if 0 <= i < num_cols:
-                        drop_cols.add(i)
-        # 兜底:若什么都没识别,且 num_cols > 0,丢最后一列(老数据)
-        if not drop_cols and num_cols > 0:
-            drop_cols.add(num_cols - 1)
-        # 大的下标先丢(从右往左删,不会导致下标错位)
-        drop_cols_sorted = sorted(drop_cols, reverse=True)
-
-        def _strip(row: list) -> list:
-            out = row
-            for c in drop_cols_sorted:
-                if 0 <= c < len(out):
-                    out = out[:c] + out[c + 1:]
-            return out
-
-        # 写表:每张子表"第一行(表头)+ 后续(数据+合计)",丢 cm 指定的辅助列
-        current_row += 1
-        section_header_row = current_row
-        ws.append(_strip(kept_rows[0]))                   # 表头
+        # 写表:每个 section 写"数据+合计行"。
+        # 表头统一只写在最前面(由后续整组空列压缩逻辑保留第 1 行作表头),
+        # 避免每个子表自带表头导致中间出现重复的「客户组/型号/类型...」行
+        # (这些行里的列名会撑住"本子表独有的列",妨碍后续压缩)。
+        # 不在段间插空行 —— 段间视觉分隔靠首列(客户组)的颜色 + 合并的合计行天然分隔。
+        # 写入策略:用 ws.max_row 跟踪实际位置,ws.append 总是写到 max_row+1;
+        # 因此 current_row 应在 ws.append 之后 = ws.max_row(避免 +=1 算多 1 行)。
+        is_first_section = len(sections) == 0
+        if is_first_section:
+            section_header_row = current_row + 1   # 第一次 append 会写到 max_row+1
+            ws.append(kept_rows[0])                # 表头(只写一次)
+            current_row = ws.max_row
+            section_data_first = current_row + 1
+        else:
+            # 非首段:不写表头,直接续写数据(段间密排)
+            section_header_row = sections[0]["header_row"]
+            section_data_first = current_row + 1
         for r in kept_rows[1:]:
-            current_row += 1
-            ws.append(_strip(r))                          # 数据 + 合计行
-        data_first_row = section_header_row + 1
+            ws.append(r)
+            current_row = ws.max_row
+        data_first_row = section_data_first
         data_last_row = current_row
 
         rows_kept_total += len(kept_rows)
@@ -907,15 +1170,74 @@ def _build_merged_file(
         shutil.rmtree(group_dir)
         return None
 
-    # 列数补齐到统一 output_col_count（防止短行被错认）
-    if ws.max_column < output_col_count:
-        for r in range(1, ws.max_row + 1):
-            row = ws[r]
-            for _ in range(output_col_count - ws.max_column):
-                # openpyxl 在追加时已自动扩到 max；这里是兜底防御
-                pass
+    # ===== 列数自动确定 =====
+    # 1) 取整组合并表(已写出)的最大列数 = 各 section 实际占用的最大列号
+    n_cols_actual = ws.max_column
+    # (openpyxl 的稀疏 cell 机制保证:对任何 r/c,ws.cell(r,c).value 都会返回 None 或实际值,
+    #  不需要主动把短 section 补齐)
+
+    # 2) 收集所有 (header_row -> 表头) + 数据行,做"全空列"扫描
+    #    移除空列后再回写 ws;同时把 global_cm 的列索引按已删列做偏移重映射
+    header_cells: list = []
+    data_cells_by_row: dict[int, list] = {}
+    for sec in sections:
+        hr = sec["header_row"]
+        for c in range(1, n_cols_actual + 1):
+            if c <= len(header_cells):
+                # 已经有该列的 header(多张子表合并),取第一个非空的
+                if header_cells[c - 1] is None:
+                    header_cells[c - 1] = ws.cell(hr, c).value
+            else:
+                header_cells.append(ws.cell(hr, c).value)
+        for r in range(sec["data_first_row"], sec["data_last_row"] + 1):
+            data_cells_by_row[r] = [ws.cell(r, c).value for c in range(1, n_cols_actual + 1)]
+
+    new_header, new_rows_per_row, removed_idx = _drop_blank_columns(
+        header_cells, [data_cells_by_row[r] for r in sorted(data_cells_by_row.keys())]
+    )
+
+    if removed_idx:
+        log.append(
+            f"  [压缩] 移除 {len(removed_idx)} 个全空列 "
+            f"(列号 {removed_idx}) → 输出列数 {len(new_header)}"
+        )
+        # 3) 按压缩结果整体回写 ws
+        #    先清空 ws 既有内容(行/样式都会被一并清掉,不影响后续 _apply_styles)
+        ws.delete_rows(1, ws.max_row)
+        # 写入新表头
+        ws.append(new_header)
+        # 写入各 section 的数据行;按原 sections 的行号范围重新映射
+        # 压缩后整张表只有 1 个 header_row(=1),各 section 紧接其后依次排列
+        new_sections: list[dict] = []
+        running_row = 1   # header 已写入
+        # 预先把 data_cells_by_row 排序后对应的压缩行准备好
+        compressed_by_orig_row: dict[int, list] = {}
+        compressed_iter = iter(new_rows_per_row)
+        for r in sorted(data_cells_by_row.keys()):
+            compressed_by_orig_row[r] = next(compressed_iter)
+        for sec in sections:
+            sec_first = running_row + 1
+            for r in range(sec["data_first_row"], sec["data_last_row"] + 1):
+                ws.append(compressed_by_orig_row[r])
+                running_row += 1
+            new_sections.append({
+                "header_row": 1,
+                "data_first_row": sec_first,
+                "data_last_row": running_row,
+            })
+        sections = new_sections
+        # 4) 重映射 global_cm 的索引(让样式判定「型号 / 类型」位置仍正确)
+        if global_cm is not None:
+            global_cm = _remap_column_map(global_cm, removed_idx)
 
     _apply_styles(ws, sections, global_cm)
+    # 裁短尾部「无任何 cell」的稀疏行 —— 列压缩后 ws.max_row 可能仍指向旧值
+    # (openpyxl 不会自动收缩),这里主动用 delete_rows 把 last_real_row 之后的
+    # 物理行删掉,让 Excel 不显示这些空行
+    last_real_row = max((s["data_last_row"] for s in sections), default=1)
+    last_real_row = max(last_real_row, 1)  # 至少保留表头
+    if last_real_row < ws.max_row:
+        ws.delete_rows(last_real_row + 1, ws.max_row - last_real_row)
     wb.save(merged_path)
     return merged_path, rows_kept_total, rows_dropped_total
 
@@ -964,14 +1286,14 @@ ProgressCb = Callable[[int, int, str], None]
 
 
 def process(cfg: dict, progress_cb: ProgressCb | None = None) -> ProcessResult:
-    """主入口。cfg 需含 src_dir/index_file/output_dir/num_cols。
+    """主入口。cfg 需含 src_dir/index_file/output_dir。
+    列数不再由 cfg 传入:由 _build_merged_file 在每组内自动按拆分数据决定,并剔除全空列。
     progress_cb(current_idx, total, message) 在每个组开始时调用一次。"""
     result = ProcessResult()
 
     src_dir = Path(cfg["src_dir"])
     index_file = Path(cfg["index_file"])
     output_dir = Path(cfg["output_dir"])
-    num_cols = int(cfg.get("num_cols", 41))
 
     if not src_dir or src_dir == Path("."):
         raise ValueError("src_dir 未配置")
@@ -1001,7 +1323,7 @@ def process(cfg: dict, progress_cb: ProgressCb | None = None) -> ProcessResult:
         log.append(f"=== {out_name} ===")
         if progress_cb:
             progress_cb(idx - 1, len(groups), f"正在合并: {out_name}")
-        merged = _build_merged_file(g, available, src_dir, output_dir, num_cols, log)
+        merged = _build_merged_file(g, available, src_dir, output_dir, log)
         if merged is None:
             continue
         merged_path, kept, dropped = merged
@@ -1023,13 +1345,112 @@ def process(cfg: dict, progress_cb: ProgressCb | None = None) -> ProcessResult:
 
 
 # ------------------- CLI 入口 -------------------
-def main() -> int:
-    cfg = load_config()
+def _demo_data(out_root: Path) -> tuple[Path, Path, Path]:
+    """在 out_root 下生成一组演示数据,返回 (src_dir, index_file, output_dir)。
+
+    演示场景:
+      组A
+        subA : 客户名|型号|类型|色A|色B|色C|数量|单价|辅助列|换算率|备注
+               含 3 个辅助列,且 色A/色C 数据全空
+        subB : 客户名|型号|类型|数量|备注|辅助列|辅助2
+               列顺序不同,且 数量/色A(空) 等与 subA 错位
+               ⚠️ 注意:不同子表同一位置不一定都是空,压缩只对整组同时空才生效
+    """
+    src = out_root / "src"; src.mkdir(parents=True, exist_ok=True)
+    out = out_root / "out"; out.mkdir(parents=True, exist_ok=True)
+
+    # subA — 色A/色C 数据全空(期待被压缩),色B/数量/单价 有值
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(['客户名', '型号', '类型', '色A', '色B', '色C', '数量', '单价', '辅助列', '换算率', '备注'])
+    ws.append(['客户1', 'M001', '类型X', None, '红', None, 100, 50, 0, 1.0, 'note1'])
+    ws.append(['客户2', 'M002', '类型X', None, '蓝', None, 200, 60, 1, 2.0, 'note2'])
+    ws.append(['合计', '合计', '合计', None, None, None, 300, None, None, None, None])
+    wb.save(src / 'subA.xlsx')
+
+    # subB — 列顺序不同,色A(在 subA 是空)/色C(在 subA 也是空)在这张表里都空 → 整组同时空,可被压缩
+    #         「备注/辅助列/辅助2」按表头名预剔除
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(['客户名', '型号', '类型', '色A', '色B', '色C', '数量', '备注', '辅助列', '辅助2'])
+    ws.append(['客户3', 'M003', '类型Y', None, '绿', None, 50, 'nb', 0, 'x'])
+    ws.append(['客户4', 'M004', '类型Y', None, '黄', None, 70, 'nb', 1, 'y'])
+    ws.append(['合计', '合计', '合计', None, None, None, 120, None, None, None])
+    wb.save(src / 'subB.xlsx')
+
+    # 分类表
+    idx = out_root / "idx.xlsx"
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(['组A', '描述', '子表1', '子表2'])
+    ws.append(['组A', 'd', 'subA', 'subB'])
+    wb.save(idx)
+
+    return src, idx, out
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口,支持以下用法:
+
+    默认(读 config.json):        python merge_stock_files.py
+    显式传参:                    python merge_stock_files.py --src <dir> --index <file> --out <dir>
+    一键生成演示数据并跑一次:    python merge_stock_files.py --demo
+    演示数据生成但只测解析:      python merge_stock_files.py --demo --dry-run
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="分类表 → 合并 Excel")
+    parser.add_argument("--src", help="源子表目录(覆盖 config.json)")
+    parser.add_argument("--index", help="分类表文件(覆盖 config.json)")
+    parser.add_argument("--out", help="输出目录(覆盖 config.json)")
+    parser.add_argument("--demo", action="store_true",
+                        help="在 --demo-dir 指定的目录下生成演示数据并执行一次合并")
+    parser.add_argument("--demo-dir", default=str(Path.home() / "stock_demo"),
+                        help="演示数据生成目录(默认 ~/stock_demo)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="只生成演示数据 / 解析,不做实际合并(便于排错)")
+    parser.add_argument("--unsafe-output", action="store_true",
+                        help="允许 output 指向 src_dir 等危险路径(与 config 中相同选项等价)")
+    args = parser.parse_args(argv)
+
+    cfg: dict
+    if args.demo:
+        demo_dir = Path(args.demo_dir).resolve()
+        src, idx, out = _demo_data(demo_dir)
+        cfg = {
+            "src_dir": str(src),
+            "index_file": str(idx),
+            "output_dir": str(out),
+            "allow_unsafe_output": args.unsafe_output,
+        }
+        print(f"[demo] 数据已生成到 {demo_dir}")
+        print(f"        src   = {src}")
+        print(f"        index = {idx}")
+        print(f"        out   = {out}")
+    else:
+        cfg = load_config()
+        if args.src:
+            cfg["src_dir"] = args.src
+        if args.index:
+            cfg["index_file"] = args.index
+        if args.out:
+            cfg["output_dir"] = args.out
+        if args.unsafe_output:
+            cfg["allow_unsafe_output"] = True
+
     print(f"SRC_DIR    = {cfg['src_dir']}")
     print(f"INDEX_FILE = {cfg['index_file']}")
     print(f"OUTPUT_DIR = {cfg['output_dir']}")
-    print(f"NUM_COLS   = {cfg.get('num_cols', 41)}")
+    print("NUM_COLS   = 自动(预剔除辅助列 + 移除全空数据列)")
     print()
+
+    if args.dry_run:
+        try:
+            groups = load_classification(Path(cfg["index_file"]))
+        except FileNotFoundError as e:
+            print(f"[错误] {e}")
+            return 1
+        print(f"[dry-run] 分类表共 {len(groups)} 组")
+        for g in groups:
+            print(f"  组: {g['a_col']!r} -> 子表 {g['sub_files']}")
+        return 0
 
     try:
         result = process(cfg, progress_cb=lambda c, t, m: None)
@@ -1046,4 +1467,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
