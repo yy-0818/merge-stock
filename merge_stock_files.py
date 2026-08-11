@@ -1323,8 +1323,6 @@ def _copy_source_files(
             continue
         shutil.copy2(src, dst)
         copied += 1
-        # 复制后压缩色号空列(对 copy 后的文件原地操作)
-        _compress_blank_color_cols(dst)
     return copied
 
 
