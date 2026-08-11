@@ -264,6 +264,26 @@ def _is_data_column_name(header_name: str) -> bool:
     return False
 
 
+def _is_color_header(header_name: str) -> bool:
+    """判断表头名是否为「色号列」(D1..D29 / A / A1..A14 / A31)。
+
+    色号列不在预剔除空列时删除 —— 它们是合并后按列对齐的关键槽位,
+    即使某子表整列为空也要保留到合并后、由整组空列扫描统一清理。
+    """
+    if header_name is None:
+        return False
+    n = _normalize_header(header_name)
+    if not n:
+        return False
+    # D1..D29
+    if len(n) >= 2 and n[0] == "d" and n[1:].isdigit():
+        return True
+    # A / A1..A14 / A31
+    if n == "a" or (n.startswith("a") and n[1:].isdigit()):
+        return True
+    return False
+
+
 def _compute_used_data_cols(
     ws, sections: list[dict], header_rows: set[int], cm: ColumnMap | None
 ) -> set[int]:
@@ -1095,17 +1115,20 @@ def _build_merged_file(
         # 在此按"本子表内数据行全空"先压缩一遍,可显著减少最终表格的空洞列。
         # 判定:对每列 j,只要子表数据行中存在 1 个非空 cell,该列就保留。
         # 表头是否为空不影响 —— 因为表头本身可能就没值但位置是"必须留的"语义槽。
+        # 注意:色号列(D1..D29 / A / A1..A14 / A31)不在此剔除 —— 它们是合并后
+        # 按列对齐的关键槽位,即使某子表整列为空也要保留到合并后、由整组空列扫描统一清理。
+        sub_header_for_drop = raw_rows[0] if raw_rows else []
         if raw_rows and len(raw_rows) >= 2:
             sub_data = raw_rows[1:]
-            # 宽度按表头长度和数据行最大长度取
             width = max(
                 len(raw_rows[0]) if raw_rows[0] else 0,
                 max((len(r) for r in sub_data), default=0),
             )
             blank_cols: set[int] = set()
             for j in range(width):
-                # treat_zero_as_blank=True:整列都是 None/空字符串/0 时算「全空」
-                # —— 用于清理拆分脚本产生的「纯占位 0 序列列」(如 D12-D29 全是 0)
+                header_name = sub_header_for_drop[j] if j < len(sub_header_for_drop) else None
+                if _is_color_header(header_name):
+                    continue  # 跳过色号列,即使整列空也保留
                 if all(
                     j >= len(r) or _is_blank_cell(r[j], treat_zero_as_blank=True)
                     for r in sub_data
