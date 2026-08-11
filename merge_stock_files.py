@@ -469,13 +469,14 @@ def _compute_max_cols(per_sub_rows: list[list[list]]) -> int:
 
 
 def _drop_blank_columns(
-    header: list, rows: list[list]
+    header: list, rows: list[list], treat_zero_as_blank: bool = False
 ) -> tuple[list, list[list], list[int]]:
     """从「表头 + 数据行」中删除「全空列」,并返回剔除后的表头、数据、所有被删除的列索引(原 0-based)。
 
     判定:对每个列下标 j,若 rows[*][j] 在**所有数据行**中都为空,则该列视为「全空列」并移除
     (表头是否有值不影响判定 —— 表头为空但数据有值要保留;表头有值但数据全空也要移除,
     保留空表头会让表头出现"空洞",不符合展示习惯)。
+    treat_zero_as_blank: 为 True 时把数值 0 也视为空(用于清理纯占位 0 列)。
 
     返回:
         new_header: 压缩后的表头
@@ -493,7 +494,7 @@ def _drop_blank_columns(
     for j in range(width):
         col_all_blank = True
         for r in rows:
-            if j < len(r) and not _is_blank_cell(r[j]):
+            if j < len(r) and not _is_blank_cell(r[j], treat_zero_as_blank=treat_zero_as_blank):
                 col_all_blank = False
                 break
         if col_all_blank:
@@ -507,6 +508,45 @@ def _drop_blank_columns(
     for r in rows:
         new_rows.append([r[j] if j < len(r) else None for j in keep])
     return new_header, new_rows, sorted(blank_cols)
+
+
+def _compress_blank_color_cols(path: Path) -> None:
+    """对复制后的子表文件原地压缩「色号列全空」的列。
+
+    仅针对色号列(D1..D29 / A / A1..A14 / A31)做压缩,
+    其他列(如客户组/型号/类型/1级/2级/辅助列)保留不动。
+    只删除「整列数据行全为 None/0」且「表头属于色号列」的列。
+    """
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        wb.close()
+        return
+    header = list(rows[0])
+    data = rows[1:]
+    width = max(len(header), max((len(r) for r in data), default=0))
+    blank_color_cols: set[int] = set()
+    for j in range(width):
+        if not _is_color_header(header[j] if j < len(header) else None):
+            continue
+        if all(
+            j >= len(r) or _is_blank_cell(r[j], treat_zero_as_blank=True)
+            for r in data
+        ):
+            blank_color_cols.add(j)
+    if not blank_color_cols:
+        wb.close()
+        return
+    keep = [j for j in range(width) if j not in blank_color_cols]
+    new_header = [header[j] if j < len(header) else None for j in keep]
+    new_rows = [[r[j] if j < len(r) else None for j in keep] for r in data]
+    ws.delete_rows(1, ws.max_row)
+    ws.append(new_header)
+    for r in new_rows:
+        ws.append(r)
+    wb.save(path)
+    wb.close()
 
 
 def _remap_column_map(cm: ColumnMap, removed: list[int]) -> ColumnMap:
@@ -1216,7 +1256,9 @@ def _build_merged_file(
             data_cells_by_row[r] = [ws.cell(r, c).value for c in range(1, n_cols_actual + 1)]
 
     new_header, new_rows_per_row, removed_idx = _drop_blank_columns(
-        header_cells, [data_cells_by_row[r] for r in sorted(data_cells_by_row.keys())]
+        header_cells,
+        [data_cells_by_row[r] for r in sorted(data_cells_by_row.keys())],
+        treat_zero_as_blank=True,
     )
 
     if removed_idx:
@@ -1281,6 +1323,8 @@ def _copy_source_files(
             continue
         shutil.copy2(src, dst)
         copied += 1
+        # 复制后压缩色号空列(对 copy 后的文件原地操作)
+        _compress_blank_color_cols(dst)
     return copied
 
 
