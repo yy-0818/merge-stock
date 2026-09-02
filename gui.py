@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 import merge_stock_files as core
 
 APP_NAME = "Stock Merge"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3.0"
 
 # ------------------- macOS 毛玻璃支持 -------------------
 if sys.platform == "darwin":
