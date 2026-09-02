@@ -1076,6 +1076,9 @@ def _build_merged_file(
     # 全局 cm:以第一张有效子表为准,后续写出 / 排序 / 染色均按它进行。
     # (分类表的源表通常用同一模板,但即使不同也会被合并到同一 ws,只要头部一致即可)
     global_cm: ColumnMap | None = None
+    
+    # ===== 第一步:预处理所有子表,收集处理后的数据 =====
+    processed_subs: list[dict] = []  # 存储每个子表处理后的数据
 
     for sub in group["sub_files"]:
         candidate = src_dir / f"{sub}.xlsx"
@@ -1211,26 +1214,51 @@ def _build_merged_file(
         )
 
         if not kept_rows:
+            rows_dropped_total += drop
             continue
-
-        # 写表:每个 section 写"数据+合计行"。
-        # 表头统一只写在最前面(由后续整组空列压缩逻辑保留第 1 行作表头),
-        # 避免每个子表自带表头导致中间出现重复的「客户组/型号/类型...」行
-        # (这些行里的列名会撑住"本子表独有的列",妨碍后续压缩)。
-        # 不在段间插空行 —— 段间视觉分隔靠首列(客户组)的颜色 + 合并的合计行天然分隔。
-        # 写入策略:用 ws.max_row 跟踪实际位置,ws.append 总是写到 max_row+1;
-        # 因此 current_row 应在 ws.append 之后 = ws.max_row(避免 +=1 算多 1 行)。
-        is_first_section = len(sections) == 0
-        if is_first_section:
-            section_header_row = current_row + 1   # 第一次 append 会写到 max_row+1
-            ws.append(kept_rows[0])                # 表头(只写一次)
-            current_row = ws.max_row
-            section_data_first = current_row + 1
-        else:
-            # 非首段:不写表头,直接续写数据(段间密排)
-            section_header_row = sections[0]["header_row"]
-            section_data_first = current_row + 1
-        for r in kept_rows[1:]:
+        
+        # 保存处理后的子表数据
+        processed_subs.append({
+            "sub_name": sub,
+            "kept_rows": kept_rows,
+            "cm": cm,
+            "drop": drop,
+        })
+    
+    if not processed_subs:
+        wb.close()
+        log.append(f"[空组跳过] {out_name} (无任何子表匹配或全部被过滤)")
+        shutil.rmtree(group_dir)
+        return None
+    
+    # ===== 第二步:合并所有子表的表头,构建统一表头 =====
+    # 收集所有子表的表头,按列位置合并(取第一个非空值)
+    max_cols = max(len(ps["kept_rows"][0]) for ps in processed_subs if ps["kept_rows"])
+    merged_header: list = [None] * max_cols
+    for ps in processed_subs:
+        if not ps["kept_rows"]:
+            continue
+        sub_header = ps["kept_rows"][0]
+        for i, val in enumerate(sub_header):
+            if i < max_cols and merged_header[i] is None and val is not None:
+                merged_header[i] = val
+    
+    log.append(f"  [表头合并] 合并 {len(processed_subs)} 个子表的表头,最终列数: {max_cols}")
+    
+    # ===== 第三步:写入合并后的数据 =====
+    # 先写统一的表头
+    ws.append(merged_header)
+    current_row = ws.max_row
+    section_header_row = 1
+    
+    for ps in processed_subs:
+        kept_rows = ps["kept_rows"]
+        sub_name = ps["sub_name"]
+        drop = ps["drop"]
+        
+        # 跳过表头,只写数据行和合计行
+        section_data_first = current_row + 1
+        for r in kept_rows[1:]:  # 跳过kept_rows[0](表头)
             ws.append(r)
             current_row = ws.max_row
         data_first_row = section_data_first
@@ -1243,12 +1271,6 @@ def _build_merged_file(
             "data_first_row": data_first_row,
             "data_last_row": data_last_row,
         })
-
-    if rows_kept_total == 0:
-        wb.close()
-        log.append(f"[空组跳过] {out_name} (无任何子表匹配或全部被过滤)")
-        shutil.rmtree(group_dir)
-        return None
 
     # ===== 列数自动确定 =====
     # 1) 取整组合并表(已写出)的最大列数 = 各 section 实际占用的最大列号
