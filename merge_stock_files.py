@@ -242,7 +242,7 @@ COLUMN_FONT = Font(name="Calibri", size=11, color="1F1F1F")
 
 def _is_data_column_name(header_name: str) -> bool:
     """判断表头名是否属于"应上底色的数据列"。
-    数据列的语义:每行有非零/非空数字(D1..D22 / A / A1..A12 / 1级 / 2级)
+    数据列的语义:每行有非零/非空数字(D1..D22 / A / A1..A12 / 1级 / 2级 / 年份)
 
     注意:**换算率、备注**这些"辅助信息列"**不上底色**——它们要么是单个数字、要么是文字评论,
     视觉上和数据矩阵混在一起反而混乱(而且我们最终也不会输出这些列,所以更不需要识别)。
@@ -252,6 +252,9 @@ def _is_data_column_name(header_name: str) -> bool:
     n = _normalize_header(header_name)
     if not n:
         return False
+    # 年份列:应用数据列样式(右对齐+底色)
+    if n == "年份":
+        return True
     # 1 级 / 2 级
     if n in ("1级", "2级", "一级", "二级", "等级1", "等级2"):
         return True
@@ -316,19 +319,26 @@ def _compute_used_data_cols(
     # helper / nosort 列已从 ws 中删除,所以 ws 中已不存在
     # 因此 data_cols_ws 已经天然排除了 helper/nosort(已被 _strip 删除)
     #     也天然排除了客户名(它的表头是 None / 空字符串, _is_data_column_name 返回 False)
-    # 只需要再排除: cm.model_idx 和 cm.type_idx 对应的 ws 列号
-    for orig_idx in (cm.model_idx if cm else None, cm.type_idx if cm else None):
+    # 只需要再排除: cm.model_idx / cm.type_idx / cm.year_idx 对应的 ws 列号
+    # 注意: year_idx 虽然应用数据列样式,但它本身是业务维度字段(像型号/类型一样),
+    #       不应在这里被当作"需要过滤空值的数据列"来处理
+    for orig_idx in (cm.model_idx if cm else None, cm.type_idx if cm else None, cm.year_idx if cm else None):
         if orig_idx is None or orig_idx < 0:
             continue
         # 翻译 orig_idx → ws col:假设每张子表的 strip 不变(在 _apply_styles 调用前都是同结构),
         # 用第一个 section 的数据行做样本是不行的。
-        # 我们改用遍历第一行(表头行),看哪个 ws 列号对应 model/type 的名字
+        # 我们改用遍历第一行(表头行),看哪个 ws 列号对应 model/type/year 的名字
         # 但更简单:遍历 ws 的所有列,匹配名字
         for c in range(1, ws.max_column + 1):
             n = ws.cell(first_header, c).value
             if n is None:
                 continue
-            target = ("型号" if orig_idx == cm.model_idx else "类型") if cm else ""
+            target = (
+                "型号" if orig_idx == cm.model_idx 
+                else "类型" if orig_idx == cm.type_idx 
+                else "年份" if orig_idx == cm.year_idx 
+                else ""
+            ) if cm else ""
             if target and _normalize_header(n) == _normalize_header(target):
                 excluded.add(c)
                 break
@@ -579,6 +589,7 @@ def _remap_column_map_with_drop(cm: ColumnMap, drop: list[int]) -> ColumnMap:
     new_cm = ColumnMap(
         model_idx=_shift(cm.model_idx),
         type_idx=_shift(cm.type_idx),
+        year_idx=_shift(cm.year_idx),
         helper_idx=_shift(cm.helper_idx) if cm.helper_idx not in removed_set else DEFAULT_HELPER_COL_IDX,
         nosort_idx=_shift(cm.nosort_idx),
         max_used_col_idx=max(0, cm.max_used_col_idx - len(drop)),
@@ -622,12 +633,14 @@ class ColumnMap:
     关键字段:
     - model_idx:  「型号」所在列(用于合计行识别 + 排序次键)
     - type_idx:   「类型」所在列(用于排序主键)
+    - year_idx:   「年份」所在列(新增,不参与排序,应用数据列样式)
     - helper_idx: 过滤控制列(显示 / 不显示; 不显示的行被丢)
     - nosort_idx: 排序控制列(不排序 / 空; 标了"不排序"的行不参与排序,保留原顺序)
     - max_used_col_idx: 表头最大下标(用于数据列染色范围判定)
     """
     model_idx: int | None = None   # 「型号」所在列
     type_idx: int | None = None    # 「类型」所在列
+    year_idx: int | None = None    # 「年份」所在列
     helper_idx: int = DEFAULT_HELPER_COL_IDX   # 过滤控制列(默认最后一列)
     nosort_idx: int | None = None  # 排序控制列(默认不存在 → 全量排序)
     max_used_col_idx: int = 0
@@ -645,13 +658,13 @@ def _parse_column_map(header: list) -> ColumnMap:
     """从表头行构建 ColumnMap。
 
     字段识别规则:
-    - 「型号」「类型」:精确匹配(casefold)
+    - 「型号」「类型」「年份」:精确匹配(casefold)
     - helper(filter): 「显示 / 辅助 / 是否显示 / 显示列 / 显示控制 / 隐藏 / 辅助列」任一别名
                       — 取**最后**一个匹配列,通常对应源表那个"最后显示控制列"
     - nosort:        「辅助2 / 不排序列 / 排序控制 / 辅助 2 / aux2」任一别名
 
     找不到对应列时:
-    - 型号/类型 → None(兜底退化)
+    - 型号/类型/年份 → None(兜底退化)
     - helper → -1(原约定:辅助视为末列,自动被丢)
     - nosort → None(不启用"不排序"功能,全部数据行参与排序)
     """
@@ -662,6 +675,8 @@ def _parse_column_map(header: list) -> ColumnMap:
             cm.model_idx = i
         elif name == "类型" and cm.type_idx is None:
             cm.type_idx = i
+        elif name == "年份" and cm.year_idx is None:
+            cm.year_idx = i
         else:
             # 别名匹配:按优先级顺序遍历,后写的覆盖前面的(谁靠后谁赢,符合用户把"辅助列"挪到中间的场景)
             filter_match = any(_normalize_header(a) == name for a in COL_NAME_HELPER_FILTER_ALIASES)
@@ -890,13 +905,15 @@ def _autosize_columns(ws, min_w: float = 8.0, max_w: float = 30.0, extra_for_tot
 
 def _is_numeric_header(name: str) -> bool:
     """判断表头是否代表"数字列"(用于决定右对齐 + 数字格式)。
-    1级 / 2级 / D1..D22 / A / A1..A12 都是数字列。
+    1级 / 2级 / D1..D22 / A / A1..A12 / 年份 都是数字列。
     """
     if name is None:
         return False
     n = _normalize_header(name)
     if not n:
         return False
+    if n == "年份":
+        return True
     if n in ("1级", "2级", "一级", "二级", "等级1", "等级2"):
         return True
     if len(n) >= 2 and n[0] == "d" and n[1:].isdigit():

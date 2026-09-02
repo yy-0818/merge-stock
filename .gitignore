@@ -4,3 +4,9 @@ build/
 __pycache__/
 *.pyc
 .DS_Store
+stock/
+2026-*/
+test_year/
+*.xlsx
+!分类.xlsx
+手册/

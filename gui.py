@@ -243,7 +243,7 @@ class MainWindow(QMainWindow):
         # 选项条
         opts_row = QHBoxLayout()
         opts_row.setSpacing(20)
-        self._cols_label = QLabel("列数: 自动(按拆分数据 + 剔除全空列)")
+        self._cols_label = QLabel("列数: 自动(按拆分数据 + 剔除全空列) · 支持年份列")
         self._cols_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-weight: 600;")
         self.remember_chk = QCheckBox("完成后自动打开输出目录")
         self.remember_chk.setChecked(True)
