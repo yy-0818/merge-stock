@@ -502,6 +502,13 @@ def _drop_blank_columns(
     # 1. 判定哪些列要删:数据行该列全部为空(表头不影响)
     blank_cols: set[int] = set()
     for j in range(width):
+        # 保护色号列和年份列:即使数据全空也不删除
+        header_name = header[j] if j < len(header) else None
+        if _is_color_header(header_name):
+            continue  # 色号列保护:业务必须字段
+        if _normalize_header(header_name) == "年份":
+            continue  # 年份列保护:业务维度字段
+        
         col_all_blank = True
         for r in rows:
             if j < len(r) and not _is_blank_cell(r[j], treat_zero_as_blank=treat_zero_as_blank):
