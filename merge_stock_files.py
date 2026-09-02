@@ -1189,6 +1189,9 @@ def _build_merged_file(
                 header_name = sub_header_for_drop[j] if j < len(sub_header_for_drop) else None
                 if _is_color_header(header_name):
                     continue  # 跳过色号列,即使整列空也保留
+                # 保护年份列:即使整列空也保留(年份是业务维度字段,不同子表可能有/无)
+                if _normalize_header(header_name) == "年份":
+                    continue
                 if all(
                     j >= len(r) or _is_blank_cell(r[j], treat_zero_as_blank=True)
                     for r in sub_data
